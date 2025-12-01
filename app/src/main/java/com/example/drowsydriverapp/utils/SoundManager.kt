@@ -27,9 +27,14 @@ class SoundManager(private val context: Context) {
     private val isPlaying: Boolean get() = _isPlaying
     private var audioFocusRequest: AudioFocusRequest? = null
     private val scope = CoroutineScope(Dispatchers.Main + Job())
+    @Volatile
     private var currentAlertLevel: AlertLevel = AlertLevel.NORMAL
     private var tts: TextToSpeech? = null
+    @Volatile
+    private var ttsReady = false
     private var currentUsesMediaStream: Boolean = true
+    @Volatile
+    private var lastAlertSettings: AlertSettings? = null
 
     init {
         Log.d(TAG, "Initializing SoundManager")
@@ -101,10 +106,16 @@ class SoundManager(private val context: Context) {
         try {
             tts = TextToSpeech(context) { status ->
                 Log.d(TAG, "TextToSpeech init status: $status")
+                ttsReady = status == TextToSpeech.SUCCESS
+                if (!ttsReady) {
+                    Log.e(TAG, "TextToSpeech initialization failed with status $status")
+                    tts = null
+                }
             }
         } catch (e: Exception) {
             Log.e(TAG, "Error initializing TextToSpeech", e)
             tts = null
+            ttsReady = false
         }
     }
 
@@ -127,7 +138,7 @@ class SoundManager(private val context: Context) {
                         AudioManager.AUDIOFOCUS_LOSS,
                         AudioManager.AUDIOFOCUS_LOSS_TRANSIENT -> {
                             Log.d(TAG, "Audio focus lost, stopping sound")
-                            stopSound()
+                            stopSound(resetState = false)
                         }
                         AudioManager.AUDIOFOCUS_LOSS_TRANSIENT_CAN_DUCK -> {
                             Log.d(TAG, "Audio focus ducking")
@@ -138,7 +149,7 @@ class SoundManager(private val context: Context) {
                             mediaPlayer?.setVolume(1.0f, 1.0f)
                             // Resume playback if needed for severe/critical alerts
                             if (currentAlertLevel in listOf(AlertLevel.SEVERE, AlertLevel.CRITICAL)) {
-                                playAlertSound(currentAlertLevel)
+                                playAlertSound(currentAlertLevel, lastAlertSettings)
                             }
                         }
                     }
@@ -155,7 +166,7 @@ class SoundManager(private val context: Context) {
                         AudioManager.AUDIOFOCUS_LOSS,
                         AudioManager.AUDIOFOCUS_LOSS_TRANSIENT -> {
                             Log.d(TAG, "Audio focus lost (legacy), stopping sound")
-                            stopSound()
+                            stopSound(resetState = false)
                         }
                         AudioManager.AUDIOFOCUS_LOSS_TRANSIENT_CAN_DUCK -> {
                             Log.d(TAG, "Audio focus ducking (legacy)")
@@ -166,7 +177,7 @@ class SoundManager(private val context: Context) {
                             mediaPlayer?.setVolume(1.0f, 1.0f)
                             // Resume playback if needed for severe/critical alerts
                             if (currentAlertLevel in listOf(AlertLevel.SEVERE, AlertLevel.CRITICAL)) {
-                                playAlertSound(currentAlertLevel)
+                                playAlertSound(currentAlertLevel, lastAlertSettings)
                             }
                         }
                     }
@@ -209,7 +220,8 @@ class SoundManager(private val context: Context) {
         
         currentAlertLevel = alertLevel
         scope.launch {
-            val effectiveSettings = settings ?: AlertSettings()
+            val effectiveSettings = settings ?: lastAlertSettings ?: AlertSettings()
+            lastAlertSettings = effectiveSettings
             when (alertLevel) {
                 AlertLevel.WARNING -> playWarningSound(effectiveSettings)
                 AlertLevel.SEVERE -> playSevereSound(effectiveSettings)
@@ -270,7 +282,8 @@ class SoundManager(private val context: Context) {
     private fun playSound(uri: android.net.Uri, loop: Boolean, routeToBluetoothMedia: Boolean) {
         try {
             Log.d(TAG, "Preparing to play sound from URI: $uri (loop: $loop)")
-            stopSound() // Stop any existing sound first
+            // Stop any existing playback but keep current alert state so dedup logic works.
+            stopSound(resetState = false)
             
             if (mediaPlayer == null) {
                 Log.d(TAG, "MediaPlayer was null, setting up new instance")
@@ -305,7 +318,7 @@ class SoundManager(private val context: Context) {
 
     private fun speakAlert(text: String, languageCode: String) {
         try {
-            val engine = tts ?: return
+            val engine = tts?.takeIf { ttsReady } ?: return
             val locale = java.util.Locale.forLanguageTag(languageCode)
             engine.language = locale
             engine.speak(text, TextToSpeech.QUEUE_ADD, null, "drowsy_alert")
@@ -343,7 +356,7 @@ class SoundManager(private val context: Context) {
         }
     }
 
-    fun stopSound() {
+    fun stopSound(resetState: Boolean = true) {
         Log.d(TAG, "Stopping sound")
         try {
             mediaPlayer?.apply {
@@ -355,7 +368,10 @@ class SoundManager(private val context: Context) {
             vibrator.cancel()
             _isPlaying = false
             abandonAudioFocus()
-            currentAlertLevel = AlertLevel.NORMAL
+            if (resetState) {
+                currentAlertLevel = AlertLevel.NORMAL
+                lastAlertSettings = null
+            }
         } catch (e: Exception) {
             Log.e(TAG, "Error stopping sound", e)
             // Try to recover

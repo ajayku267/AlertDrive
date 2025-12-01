@@ -22,6 +22,8 @@ class BatteryMonitor(context: Context) {
     private val appContext = context.applicationContext
     private val _battery = MutableStateFlow(BatterySnapshot())
     val battery: StateFlow<BatterySnapshot> = _battery.asStateFlow()
+    @Volatile
+    private var isRegistered = false
 
     private val receiver = object : BroadcastReceiver() {
         override fun onReceive(ctx: Context?, intent: Intent?) {
@@ -46,8 +48,25 @@ class BatteryMonitor(context: Context) {
     }
 
     init {
+        register()
+    }
+
+    private fun register() {
+        if (isRegistered) return
         val filter = IntentFilter(Intent.ACTION_BATTERY_CHANGED)
         appContext.registerReceiver(receiver, filter)
+        isRegistered = true
+    }
+
+    fun stop() {
+        if (!isRegistered) return
+        try {
+            appContext.unregisterReceiver(receiver)
+        } catch (ignored: IllegalArgumentException) {
+            // Receiver already unregistered; ignore.
+        } finally {
+            isRegistered = false
+        }
     }
 }
 

@@ -28,7 +28,7 @@ class DrowsinessViewModel(application: Application) : AndroidViewModel(applicati
     private val _drowsinessState = MutableStateFlow(DrowsinessState())
     val drowsinessState: StateFlow<DrowsinessState> = _drowsinessState.asStateFlow()
     private val _alertSettings = MutableStateFlow(AlertSettings())
-    val alertSettings: StateFlow(AlertSettings) = _alertSettings.asStateFlow()
+    val alertSettings: StateFlow<AlertSettings> = _alertSettings.asStateFlow()
 
     private val faceDetector = FaceDetection.getClient(
         FaceDetectorOptions.Builder()

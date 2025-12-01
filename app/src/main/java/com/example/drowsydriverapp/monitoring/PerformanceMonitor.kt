@@ -37,7 +37,8 @@ object PerformanceMonitor {
     private lateinit var appContext: Context
     private lateinit var config: Config
 
-    private val scope = CoroutineScope(SupervisorJob() + Dispatchers.Default)
+    private var scopeJob: Job = SupervisorJob()
+    private var scope: CoroutineScope = CoroutineScope(scopeJob + Dispatchers.Default)
     private val _metrics = MutableStateFlow(PerformanceSnapshot())
     val metrics: StateFlow<PerformanceSnapshot> = _metrics.asStateFlow()
 
@@ -61,6 +62,10 @@ object PerformanceMonitor {
 
     fun initialize(context: Context, config: Config = Config()) {
         if (initialized.compareAndSet(false, true)) {
+            if (!scopeJob.isActive) {
+                scopeJob = SupervisorJob()
+                scope = CoroutineScope(scopeJob + Dispatchers.Default)
+            }
             this.config = config
             appContext = context.applicationContext
             batteryMonitor = BatteryMonitor(appContext)
@@ -170,6 +175,20 @@ object PerformanceMonitor {
         if (initialized.get()) {
             leakDetector.watch(target, label)
         }
+    }
+
+    fun shutdown() {
+        if (!initialized.compareAndSet(true, false)) return
+        metricsJob?.cancel()
+        metricsJob = null
+        frameCollector.stop()
+        if (this::anrDetector.isInitialized) {
+            anrDetector.stop()
+        }
+        if (this::batteryMonitor.isInitialized) {
+            batteryMonitor.stop()
+        }
+        scopeJob.cancel()
     }
 
     fun emitEvent(event: PerformanceEvent) {

@@ -12,5 +12,10 @@ class AlertDriveApp : Application() {
         super.onCreate()
         PerformanceMonitor.initialize(this)
     }
+
+    override fun onTerminate() {
+        super.onTerminate()
+        PerformanceMonitor.shutdown()
+    }
 }
 
