@@ -250,7 +250,8 @@ private fun PerformancePanel(
     }
 }
 
-private fun Float.format(): String = if (this == 0f) "0" else String.format("%.1f", this)
+private fun Float.format(): String =
+    if (this == 0f) "0" else String.format(java.util.Locale.US, "%.1f", this)
 
 private fun PerformanceEvent.timestampMillis(): Long = when (this) {
     is PerformanceEvent.Crash -> timestamp

@@ -14,11 +14,13 @@ class AnrDetector(
     private val timeoutMs: Long = 5_000L,
     private val onAnr: (PerformanceEvent.Anr) -> Unit
 ) {
-    private val watchdogThread = HandlerThread("AnrWatchdog")
     private val mainHandler = Handler(Looper.getMainLooper())
     private val lastResponse = AtomicLong(SystemClock.uptimeMillis())
     private val started = AtomicBoolean(false)
-    private lateinit var watchdogHandler: Handler
+    @Volatile
+    private var watchdogThread: HandlerThread? = null
+    @Volatile
+    private var watchdogHandler: Handler? = null
 
     private val monitorRunnable = object : Runnable {
         override fun run() {
@@ -28,7 +30,10 @@ class AnrDetector(
                 lastResponse.set(SystemClock.uptimeMillis())
             }
 
-            watchdogHandler.postDelayed({
+            val handler = watchdogHandler ?: return
+            handler.postDelayed({
+                if (!started.get()) return@postDelayed
+
                 val delta = SystemClock.uptimeMillis() - lastResponse.get()
                 if (delta >= timeoutMs) {
                     val stackDump = Looper.getMainLooper().thread
@@ -42,22 +47,28 @@ class AnrDetector(
                         )
                     )
                 }
-                watchdogHandler.postDelayed(this, timeoutMs)
+                if (started.get()) {
+                    watchdogHandler?.postDelayed(this, timeoutMs)
+                }
             }, timeoutMs)
         }
     }
 
     fun start() {
         if (started.compareAndSet(false, true)) {
-            watchdogThread.start()
-            watchdogHandler = Handler(watchdogThread.looper)
-            watchdogHandler.post(monitorRunnable)
+            val thread = HandlerThread("AnrWatchdog").also { it.start() }
+            watchdogThread = thread
+            watchdogHandler = Handler(thread.looper)
+            watchdogHandler?.post(monitorRunnable)
         }
     }
 
     fun stop() {
         if (started.compareAndSet(true, false)) {
-            watchdogThread.quitSafely()
+            watchdogHandler?.removeCallbacksAndMessages(null)
+            watchdogThread?.quitSafely()
+            watchdogHandler = null
+            watchdogThread = null
         }
     }
 }
