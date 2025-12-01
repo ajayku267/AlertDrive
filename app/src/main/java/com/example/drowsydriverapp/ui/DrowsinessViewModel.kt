@@ -4,14 +4,21 @@ import android.app.Application
 import androidx.lifecycle.AndroidViewModel
 import androidx.lifecycle.viewModelScope
 import com.example.drowsydriverapp.data.DrowsinessRepository
-import com.example.drowsydriverapp.data.models.*
+import com.example.drowsydriverapp.data.models.AlertLevel
+import com.example.drowsydriverapp.data.models.AlertSettings
+import com.example.drowsydriverapp.data.models.DrowsinessState
+import com.example.drowsydriverapp.data.models.EventType
 import com.example.drowsydriverapp.utils.SoundManager
 import com.google.mlkit.vision.common.InputImage
 import com.google.mlkit.vision.face.Face
 import com.google.mlkit.vision.face.FaceDetection
 import com.google.mlkit.vision.face.FaceDetectorOptions
 import kotlinx.coroutines.*
-import kotlinx.coroutines.flow.*
+import kotlinx.coroutines.flow.MutableStateFlow
+import kotlinx.coroutines.flow.StateFlow
+import kotlinx.coroutines.flow.asStateFlow
+import kotlinx.coroutines.flow.catch
+import kotlinx.coroutines.flow.update
 import kotlinx.coroutines.tasks.await
 import java.util.*
 
@@ -20,6 +27,8 @@ class DrowsinessViewModel(application: Application) : AndroidViewModel(applicati
     private val soundManager = SoundManager(application)
     private val _drowsinessState = MutableStateFlow(DrowsinessState())
     val drowsinessState: StateFlow<DrowsinessState> = _drowsinessState.asStateFlow()
+    private val _alertSettings = MutableStateFlow(AlertSettings())
+    val alertSettings: StateFlow(AlertSettings) = _alertSettings.asStateFlow()
 
     private val faceDetector = FaceDetection.getClient(
         FaceDetectorOptions.Builder()
@@ -38,6 +47,11 @@ class DrowsinessViewModel(application: Application) : AndroidViewModel(applicati
     init {
         viewModelScope.launch {
             startNewSession()
+        }
+        viewModelScope.launch {
+            repository.alertSettingsFlow.collect { settings ->
+                _alertSettings.value = settings
+            }
         }
     }
 
@@ -178,10 +192,11 @@ class DrowsinessViewModel(application: Application) : AndroidViewModel(applicati
     }
 
     private fun determineAlertLevel(drowsinessScore: Float): AlertLevel {
+        val settings = _alertSettings.value
         return when {
-            drowsinessScore > 0.8f -> AlertLevel.CRITICAL
-            drowsinessScore > 0.6f -> AlertLevel.SEVERE
-            drowsinessScore > 0.4f -> AlertLevel.WARNING
+            drowsinessScore > settings.criticalThreshold -> AlertLevel.CRITICAL
+            drowsinessScore > settings.severeThreshold -> AlertLevel.SEVERE
+            drowsinessScore > settings.warningThreshold -> AlertLevel.WARNING
             else -> AlertLevel.NORMAL
         }
     }
@@ -215,7 +230,7 @@ class DrowsinessViewModel(application: Application) : AndroidViewModel(applicati
                 // Check if alert level has changed
                 if (newState.alertLevel != _drowsinessState.value.alertLevel) {
                     android.util.Log.d("DrowsinessViewModel", "Alert level changed via updateDrowsinessState from ${_drowsinessState.value.alertLevel} to ${newState.alertLevel}")
-                    soundManager.playAlertSound(newState.alertLevel)
+                    soundManager.playAlertSound(newState.alertLevel, _alertSettings.value)
                 }
                 
                 _drowsinessState.update { currentState ->

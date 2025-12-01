@@ -9,8 +9,10 @@ import android.media.AudioFocusRequest
 import android.os.VibrationEffect
 import android.os.Vibrator
 import android.os.Build
+import android.speech.tts.TextToSpeech
 import android.util.Log
 import com.example.drowsydriverapp.data.models.AlertLevel
+import com.example.drowsydriverapp.data.models.AlertSettings
 import kotlinx.coroutines.*
 
 class SoundManager(private val context: Context) {
@@ -26,23 +28,32 @@ class SoundManager(private val context: Context) {
     private var audioFocusRequest: AudioFocusRequest? = null
     private val scope = CoroutineScope(Dispatchers.Main + Job())
     private var currentAlertLevel: AlertLevel = AlertLevel.NORMAL
+    private var tts: TextToSpeech? = null
+    private var currentUsesMediaStream: Boolean = true
 
     init {
         Log.d(TAG, "Initializing SoundManager")
         setupMediaPlayer()
+        initTextToSpeech()
     }
 
-    private fun setupMediaPlayer() {
+    private fun setupMediaPlayer(useMediaStream: Boolean = true) {
         try {
             Log.d(TAG, "Setting up MediaPlayer")
             stopSound() // Ensure clean state
             
             mediaPlayer?.release()
+            currentUsesMediaStream = useMediaStream
             mediaPlayer = MediaPlayer().apply {
+                val usage = if (useMediaStream) {
+                    AudioAttributes.USAGE_MEDIA
+                } else {
+                    AudioAttributes.USAGE_ALARM
+                }
                 setAudioAttributes(
                     AudioAttributes.Builder()
                         .setContentType(AudioAttributes.CONTENT_TYPE_SONIFICATION)
-                        .setUsage(AudioAttributes.USAGE_ALARM)
+                        .setUsage(usage)
                         .build()
                 )
                 setOnCompletionListener {
@@ -83,6 +94,17 @@ class SoundManager(private val context: Context) {
             Log.e(TAG, "Error setting up MediaPlayer", e)
             mediaPlayer?.release()
             mediaPlayer = null
+        }
+    }
+
+    private fun initTextToSpeech() {
+        try {
+            tts = TextToSpeech(context) { status ->
+                Log.d(TAG, "TextToSpeech init status: $status")
+            }
+        } catch (e: Exception) {
+            Log.e(TAG, "Error initializing TextToSpeech", e)
+            tts = null
         }
     }
 
@@ -173,6 +195,10 @@ class SoundManager(private val context: Context) {
     }
 
     fun playAlertSound(alertLevel: AlertLevel) {
+        playAlertSound(alertLevel, null)
+    }
+
+    fun playAlertSound(alertLevel: AlertLevel, settings: AlertSettings?) {
         Log.d(TAG, "Playing alert sound for level: $alertLevel")
         
         // Don't play the same alert level again unless it's NORMAL (which stops sound)
@@ -183,10 +209,11 @@ class SoundManager(private val context: Context) {
         
         currentAlertLevel = alertLevel
         scope.launch {
+            val effectiveSettings = settings ?: AlertSettings()
             when (alertLevel) {
-                AlertLevel.WARNING -> playWarningSound()
-                AlertLevel.SEVERE -> playSevereSound()
-                AlertLevel.CRITICAL -> playCriticalSound()
+                AlertLevel.WARNING -> playWarningSound(effectiveSettings)
+                AlertLevel.SEVERE -> playSevereSound(effectiveSettings)
+                AlertLevel.CRITICAL -> playCriticalSound(effectiveSettings)
                 else -> {
                     Log.d(TAG, "Normal alert level, stopping sound")
                     stopSound()
@@ -195,38 +222,62 @@ class SoundManager(private val context: Context) {
         }
     }
 
-    private fun playWarningSound() {
+    private fun playWarningSound(settings: AlertSettings) {
         Log.d(TAG, "Attempting to play warning sound")
-        val notification = RingtoneManager.getDefaultUri(RingtoneManager.TYPE_NOTIFICATION)
-        Log.d(TAG, "Using notification URI: $notification")
-        playSound(notification, false)
-        vibrateDevice(500)
+        if (settings.soundEnabled) {
+            val notification = RingtoneManager.getDefaultUri(RingtoneManager.TYPE_NOTIFICATION)
+            Log.d(TAG, "Using notification URI: $notification")
+            playSound(notification, false, settings.routeToBluetoothMedia)
+        }
+        if (settings.vibrationEnabled) {
+            vibrateDevice(500)
+        }
+        if (settings.voiceEnabled) {
+            speakAlert("Warning: You appear drowsy", settings.languageCode)
+        }
     }
 
-    private fun playSevereSound() {
+    private fun playSevereSound(settings: AlertSettings) {
         Log.d(TAG, "Attempting to play severe sound")
-        val alarm = RingtoneManager.getDefaultUri(RingtoneManager.TYPE_ALARM)
-        Log.d(TAG, "Using alarm URI: $alarm")
-        playSound(alarm, true)
-        vibrateDevice(1000)
+        if (settings.soundEnabled) {
+            val alarm = RingtoneManager.getDefaultUri(RingtoneManager.TYPE_ALARM)
+            Log.d(TAG, "Using alarm URI: $alarm")
+            playSound(alarm, true, settings.routeToBluetoothMedia)
+        }
+        if (settings.vibrationEnabled) {
+            vibrateDevice(1000)
+        }
+        if (settings.voiceEnabled) {
+            speakAlert("Severe drowsiness detected. Please take a break.", settings.languageCode)
+        }
     }
 
-    private fun playCriticalSound() {
+    private fun playCriticalSound(settings: AlertSettings) {
         Log.d(TAG, "Attempting to play critical sound")
-        val alarm = RingtoneManager.getDefaultUri(RingtoneManager.TYPE_ALARM)
-        Log.d(TAG, "Using alarm URI: $alarm")
-        playSound(alarm, true)
-        vibratePattern()
+        if (settings.soundEnabled) {
+            val alarm = RingtoneManager.getDefaultUri(RingtoneManager.TYPE_ALARM)
+            Log.d(TAG, "Using alarm URI: $alarm")
+            playSound(alarm, true, settings.routeToBluetoothMedia)
+        }
+        if (settings.vibrationEnabled) {
+            vibratePattern()
+        }
+        if (settings.voiceEnabled) {
+            speakAlert("Critical alert. Pull over safely now.", settings.languageCode)
+        }
     }
 
-    private fun playSound(uri: android.net.Uri, loop: Boolean) {
+    private fun playSound(uri: android.net.Uri, loop: Boolean, routeToBluetoothMedia: Boolean) {
         try {
             Log.d(TAG, "Preparing to play sound from URI: $uri (loop: $loop)")
             stopSound() // Stop any existing sound first
             
             if (mediaPlayer == null) {
                 Log.d(TAG, "MediaPlayer was null, setting up new instance")
-                setupMediaPlayer()
+                setupMediaPlayer(routeToBluetoothMedia)
+            } else if (currentUsesMediaStream != routeToBluetoothMedia) {
+                Log.d(TAG, "Recreating MediaPlayer for new audio route")
+                setupMediaPlayer(routeToBluetoothMedia)
             }
             
             mediaPlayer?.apply {
@@ -249,6 +300,17 @@ class SoundManager(private val context: Context) {
                 delay(1000)
                 setupMediaPlayer()
             }
+        }
+    }
+
+    private fun speakAlert(text: String, languageCode: String) {
+        try {
+            val engine = tts ?: return
+            val locale = java.util.Locale.forLanguageTag(languageCode)
+            engine.language = locale
+            engine.speak(text, TextToSpeech.QUEUE_ADD, null, "drowsy_alert")
+        } catch (e: Exception) {
+            Log.e(TAG, "Error speaking alert text", e)
         }
     }
 
@@ -313,6 +375,8 @@ class SoundManager(private val context: Context) {
             vibrator.cancel()
             _isPlaying = false
             abandonAudioFocus()
+            tts?.shutdown()
+            tts = null
         } catch (e: Exception) {
             Log.e(TAG, "Error releasing SoundManager", e)
         }
